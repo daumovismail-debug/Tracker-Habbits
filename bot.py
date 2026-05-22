@@ -6,6 +6,8 @@
 
 import os
 import asyncio
+import hashlib
+import hmac
 import logging
 from datetime import datetime, date
 from pathlib import Path
@@ -31,6 +33,9 @@ TZ = os.getenv("TZ", "Asia/Aqtobe")
 # Telegram ID владельца — чьи привычки показывает веб-интерфейс
 _web_uid = os.getenv("WEB_USER_ID", "").strip()
 WEB_USER_ID: Optional[int] = int(_web_uid) if _web_uid else None
+
+# Пароль для входа на сайт (пусто — вход без пароля)
+WEB_PASSWORD: Optional[str] = (os.getenv("WEB_PASSWORD") or "").strip() or None
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -785,6 +790,56 @@ async def error_middleware(request, handler):
         return web.json_response({"error": str(e)}, status=500)
 
 
+def _auth_token() -> str:
+    return hashlib.sha256(
+        f"habit-tracker-auth::{WEB_PASSWORD}".encode()).hexdigest()
+
+
+def _is_authed(request) -> bool:
+    if WEB_PASSWORD is None:
+        return True
+    return hmac.compare_digest(
+        request.cookies.get("habit_auth", ""), _auth_token())
+
+
+@web.middleware
+async def auth_middleware(request, handler):
+    path = request.path
+    if (WEB_PASSWORD is None
+            or path in ("/login", "/logout", "/health")
+            or path.startswith("/static/")):
+        return await handler(request)
+    if _is_authed(request):
+        return await handler(request)
+    if path.startswith("/api/"):
+        return web.json_response({"error": "Требуется вход"}, status=401)
+    raise web.HTTPFound("/login")
+
+
+async def page_login(request):
+    if _is_authed(request):
+        raise web.HTTPFound("/")
+    return web.FileResponse(STATIC_DIR / "login.html")
+
+
+async def api_login(request):
+    if WEB_PASSWORD is None:
+        return web.json_response({"ok": True})
+    data = await request.json()
+    if not hmac.compare_digest(str(data.get("password", "")), WEB_PASSWORD):
+        return web.json_response({"error": "Неверный пароль"}, status=401)
+    resp = web.json_response({"ok": True})
+    resp.set_cookie("habit_auth", _auth_token(),
+                    max_age=60 * 60 * 24 * 30, httponly=True, samesite="Lax")
+    return resp
+
+
+async def page_logout(request):
+    resp = web.HTTPFound("/login")
+    resp.del_cookie("habit_auth")
+    return resp
+
+
 async def page_index(request):
     return web.FileResponse(STATIC_DIR / "index.html")
 
@@ -821,6 +876,7 @@ async def api_state(request):
         "weekday": WEEKDAYS_RU[now.weekday()],
         "habits": habit_list,
         "done_today": sum(1 for h in habit_list if h["status"] == "done"),
+        "auth_enabled": WEB_PASSWORD is not None,
         "stats": stats,
         "settings": {
             "reminder_enabled": settings["reminder_enabled"],
@@ -919,9 +975,12 @@ async def api_save_settings(request):
 
 
 async def start_web():
-    app = web.Application(middlewares=[error_middleware])
+    app = web.Application(middlewares=[error_middleware, auth_middleware])
     app.router.add_get("/", page_index)
     app.router.add_get("/health", health)
+    app.router.add_get("/login", page_login)
+    app.router.add_post("/login", api_login)
+    app.router.add_get("/logout", page_logout)
     app.router.add_get("/api/state", api_state)
     app.router.add_post("/api/checkin", api_checkin)
     app.router.add_post("/api/habits", api_add_habit)

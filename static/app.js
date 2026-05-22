@@ -54,6 +54,10 @@ async function api(path, opts = {}) {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
+  if (res.status === 401) {
+    window.location.href = '/login';
+    await new Promise(() => {});
+  }
   let data = {};
   try { data = await res.json(); } catch (_) { /* empty body */ }
   if (!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
@@ -201,8 +205,13 @@ function renderSettings() {
         </div>
       </div>
       <button class="btn primary" id="s-save">Сохранить</button>
-    </div>`;
+    </div>
+    ${state.auth_enabled
+      ? '<button class="btn ghost" id="s-logout">Выйти из аккаунта</button>'
+      : ''}`;
   $('#s-save').onclick = saveSettings;
+  const logout = $('#s-logout');
+  if (logout) logout.onclick = () => { window.location.href = '/logout'; };
 }
 
 function renderFatal(msg) {
