@@ -1,36 +1,70 @@
-# 🎯 Трекер Привычек — Telegram Bot
+# 🎯 Трекер Привычек — Telegram-бот + Веб-интерфейс
 
-Telegram-бот для отслеживания привычек с прогрессией и напоминаниями.
+Трекер привычек с прогрессией цели и напоминаниями. Работает одновременно
+как **Telegram-бот** и как **сайт** — один процесс, одна база данных.
 
 ## Возможности
 
-- ➕ Добавление привычек с автоувеличением цели
+- ➕ Привычки с автоувеличением цели (прогрессия)
 - ✅ Ежедневная отметка: Сделано / Не сделано / Пропуск
-- 📊 Статистика и streak
-- 🔔 Спам-напоминания с 21:00 до 00:00 каждые 2 минуты
+- 📊 Статистика, проценты и streak
+- 🔔 Напоминания в Telegram — время и интервал настраиваются на сайте
+- 🖥 Веб-интерфейс: смотреть, отмечать, добавлять и удалять привычки
 
-## Деплой на Render
+## Веб-интерфейс
 
-### 1. GitHub
+Сайт показывает привычки одного владельца. Его Telegram ID задаётся в
+переменной `WEB_USER_ID` (узнать свой ID можно у [@userinfobot](https://t.me/userinfobot)).
+
+Адреса:
+- `/` — сайт
+- `/health` — проверка живости
+- `/api/*` — JSON API
+
+## Запуск на своём сервере (Docker Compose)
+
+Нужен только установленный Docker. PostgreSQL поднимается автоматически.
+
 ```bash
-git init
-git add .
-git commit -m "habit tracker bot"
-git remote add origin https://github.com/YOUR_USER/habit-tracker-bot.git
-git push -u origin main
+# 1. Создать файл с настройками
+cp .env.example .env
+nano .env          # вписать BOT_TOKEN и WEB_USER_ID
+
+# 2. Запустить (бот + сайт + база)
+docker compose up -d --build
+
+# 3. Логи при необходимости
+docker compose logs -f app
 ```
 
-### 2. Render
-1. Зайди на [render.com](https://render.com) → **New** → **Worker**
-2. Подключи GitHub репозиторий
-3. Runtime: **Docker**
-4. Environment → добавь переменную:
-   - **Key:** `BOT_TOKEN`
-   - **Value:** токен от @BotFather
-5. Disk → Add Disk:
-   - **Name:** `habit-data`
-   - **Mount Path:** `/data`
-   - **Size:** 1 GB
-6. **Create Worker**
+Сайт будет доступен по адресу **http://IP-сервера:8080**
+(порт меняется в `docker-compose.yml`, секция `ports`).
 
-Бот запустится автоматически!
+Открой этот адрес на нужном экране — и пользуйся интерфейсом.
+
+Остановить: `docker compose down` (данные сохраняются в томе `habit_db`).
+
+### Переменные окружения
+
+| Переменная     | Назначение                                  |
+|----------------|---------------------------------------------|
+| `BOT_TOKEN`    | Токен бота от @BotFather (обязательно)      |
+| `WEB_USER_ID`  | Telegram ID владельца сайта (обязательно)   |
+| `DATABASE_URL` | Строка подключения к PostgreSQL             |
+| `TZ`           | Часовой пояс, по умолчанию `Asia/Aqtobe`    |
+| `PORT`         | Порт веб-сервера внутри контейнера (10000)  |
+
+## Запуск на Render
+
+1. [render.com](https://render.com) → **New** → **Web Service**
+2. Подключи репозиторий, Runtime — **Docker**
+3. В **Environment** добавь `BOT_TOKEN`, `DATABASE_URL`, `WEB_USER_ID`
+4. **Create Web Service** — Render выдаст публичный URL сайта
+
+## Локальный запуск без Docker
+
+```bash
+pip install -r requirements.txt
+export BOT_TOKEN=...  WEB_USER_ID=...  DATABASE_URL=postgresql://...
+python bot.py
+```

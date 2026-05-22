@@ -8,6 +8,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime, date
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -26,8 +27,20 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 TZ = os.getenv("TZ", "Asia/Aqtobe")
-REMINDER_START_HOUR = 21
-REMINDER_INTERVAL_MINUTES = 2
+
+# Telegram ID владельца — чьи привычки показывает веб-интерфейс
+_web_uid = os.getenv("WEB_USER_ID", "").strip()
+WEB_USER_ID: Optional[int] = int(_web_uid) if _web_uid else None
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+# Напоминания по умолчанию (меняются на сайте, хранятся в БД)
+DEFAULT_REMINDER = {
+    "reminder_enabled": True,
+    "reminder_start_hour": 21,
+    "reminder_end_hour": 24,
+    "reminder_interval_minutes": 2,
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,6 +87,15 @@ async def init_db():
                 check_date TEXT NOT NULL,
                 status TEXT NOT NULL,
                 UNIQUE(habit_id, check_date)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id BIGINT PRIMARY KEY,
+                reminder_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                reminder_start_hour INTEGER NOT NULL DEFAULT 21,
+                reminder_end_hour INTEGER NOT NULL DEFAULT 24,
+                reminder_interval_minutes INTEGER NOT NULL DEFAULT 2
             )
         """)
     logger.info("DB ready")
@@ -127,6 +149,15 @@ async def set_checkin(habit_id: int, user_id: int, status: str):
         )
 
 
+async def delete_checkin(habit_id: int, user_id: int):
+    today = datetime.now(ZoneInfo(TZ)).date().isoformat()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM check_ins WHERE habit_id = $1 AND user_id = $2 AND check_date = $3",
+            habit_id, user_id, today
+        )
+
+
 async def get_habit_by_id(habit_id: int) -> Optional[dict]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM habits WHERE id = $1", habit_id)
@@ -153,6 +184,7 @@ async def get_all_stats(user_id: int) -> list:
         total = stats["done"] + stats["not_done"] + stats["skip"]
         streak = await get_streak(h["id"])
         result.append({
+            "id": h["id"],
             "name": h["name"],
             "target": compute_current_target(h),
             "done": stats["done"],
@@ -186,6 +218,33 @@ async def get_all_user_ids() -> list:
             "SELECT DISTINCT user_id FROM habits WHERE is_active = TRUE"
         )
         return [r["user_id"] for r in rows]
+
+
+async def get_settings(user_id: int) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM user_settings WHERE user_id = $1", user_id
+        )
+    if row:
+        return dict(row)
+    return {"user_id": user_id, **DEFAULT_REMINDER}
+
+
+async def update_settings(user_id: int, enabled: bool, start_hour: int,
+                          end_hour: int, interval: int):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO user_settings
+                   (user_id, reminder_enabled, reminder_start_hour,
+                    reminder_end_hour, reminder_interval_minutes)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (user_id) DO UPDATE SET
+                   reminder_enabled = $2,
+                   reminder_start_hour = $3,
+                   reminder_end_hour = $4,
+                   reminder_interval_minutes = $5""",
+            user_id, enabled, start_hour, end_hour, interval
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -629,17 +688,32 @@ _reminder_counter = {}
 
 
 async def send_reminders():
+    """Запускается раз в минуту. Окно и интервал — индивидуальные для пользователя."""
     tz = ZoneInfo(TZ)
     now = datetime.now(tz)
-
-    # Только с 21:00 до 23:59 по локальному времени
-    if now.hour < REMINDER_START_HOUR or now.hour >= 24:
-        return
 
     user_ids = await get_all_user_ids()
 
     for user_id in user_ids:
         try:
+            st = await get_settings(user_id)
+            if not st["reminder_enabled"]:
+                continue
+
+            start = st["reminder_start_hour"]
+            end = st["reminder_end_hour"]
+            interval = max(1, st["reminder_interval_minutes"])
+
+            # Вне окна напоминаний
+            if now.hour < start or now.hour >= end:
+                _reminder_counter.pop(user_id, None)
+                continue
+
+            # Шлём только раз в `interval` минут от начала окна
+            minutes_into_window = (now.hour - start) * 60 + now.minute
+            if minutes_into_window % interval != 0:
+                continue
+
             habits = await get_user_habits(user_id)
             checkins = await get_today_checkins(user_id)
             unchecked = [h for h in habits if h["id"] not in checkins]
@@ -652,12 +726,12 @@ async def send_reminders():
             _reminder_counter[user_id] = idx + 1
 
             names = "\n".join(f"  ▸ {h['name']}" for h in unchecked)
-            mins_left = (24 * 60 - now.hour * 60 - now.minute)
+            mins_left = (end * 60 - now.hour * 60 - now.minute)
 
             text = (
                 f"{REMINDER_MESSAGES[idx]}\n\n"
                 f"📌 <b>Не отмечено ({len(unchecked)}):</b>\n{names}\n\n"
-                f"⏳ До полуночи: ~{mins_left} мин"
+                f"⏳ Осталось времени: ~{mins_left} мин"
             )
 
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -688,23 +762,180 @@ async def fallback(message: Message):
 #  HEALTH + MAIN
 # ═══════════════════════════════════════════════════════════════════
 
-async def health_server():
-    async def handle(request):
-        return web.Response(status=200, text="", content_type="text/plain",
-                            headers={"Content-Length": "0"})
+WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг",
+               "пятница", "суббота", "воскресенье"]
 
-    app = web.Application()
-    app.router.add_get("/", handle)
-    app.router.add_get("/health", handle)
-    app.router.add_head("/", handle)
-    app.router.add_head("/health", handle)
+
+def _need_user():
+    return web.json_response(
+        {"error": "WEB_USER_ID не задан. Укажите свой Telegram ID в "
+                  "переменной окружения WEB_USER_ID и перезапустите сервер."},
+        status=503,
+    )
+
+
+@web.middleware
+async def error_middleware(request, handler):
+    try:
+        return await handler(request)
+    except web.HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Web request failed")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def page_index(request):
+    return web.FileResponse(STATIC_DIR / "index.html")
+
+
+async def health(request):
+    return web.Response(status=200, text="OK")
+
+
+async def api_state(request):
+    if WEB_USER_ID is None:
+        return _need_user()
+    uid = WEB_USER_ID
+
+    habits = await get_user_habits(uid)
+    checkins = await get_today_checkins(uid)
+    stats = await get_all_stats(uid)
+    settings = await get_settings(uid)
+    now = datetime.now(ZoneInfo(TZ))
+
+    habit_list = []
+    for h in habits:
+        habit_list.append({
+            "id": h["id"],
+            "name": h["name"],
+            "target": compute_current_target(h),
+            "step": h["step"],
+            "day_in_cycle": get_day_in_cycle(h) if h["step"] > 0 else None,
+            "created_at": h["created_at"],
+            "status": checkins.get(h["id"]),
+        })
+
+    return web.json_response({
+        "date": now.strftime("%d.%m.%Y"),
+        "weekday": WEEKDAYS_RU[now.weekday()],
+        "habits": habit_list,
+        "done_today": sum(1 for h in habit_list if h["status"] == "done"),
+        "stats": stats,
+        "settings": {
+            "reminder_enabled": settings["reminder_enabled"],
+            "reminder_start_hour": settings["reminder_start_hour"],
+            "reminder_end_hour": settings["reminder_end_hour"],
+            "reminder_interval_minutes": settings["reminder_interval_minutes"],
+        },
+    })
+
+
+async def api_checkin(request):
+    if WEB_USER_ID is None:
+        return _need_user()
+    data = await request.json()
+    try:
+        habit_id = int(data["habit_id"])
+    except (KeyError, ValueError, TypeError):
+        return web.json_response({"error": "Неверный habit_id"}, status=400)
+    status = data.get("status")
+
+    habit = await get_habit_by_id(habit_id)
+    if not habit or habit["user_id"] != WEB_USER_ID:
+        return web.json_response({"error": "Привычка не найдена"}, status=404)
+
+    if status == "clear":
+        await delete_checkin(habit_id, WEB_USER_ID)
+    elif status in ("done", "not_done", "skip"):
+        await set_checkin(habit_id, WEB_USER_ID, status)
+    else:
+        return web.json_response({"error": "Неверный статус"}, status=400)
+
+    return web.json_response({"ok": True})
+
+
+async def api_add_habit(request):
+    if WEB_USER_ID is None:
+        return _need_user()
+    data = await request.json()
+    name = (data.get("name") or "").strip()
+    if not name or len(name) > 64:
+        return web.json_response(
+            {"error": "Название должно быть от 1 до 64 символов"}, status=400)
+
+    if data.get("progression"):
+        try:
+            target = int(data["target"])
+            cycle = int(data["cycle_days"])
+            step = int(data["step"])
+            assert target > 0 and cycle > 0 and step >= 0
+        except (KeyError, ValueError, TypeError, AssertionError):
+            return web.json_response(
+                {"error": "Цель и цикл — целые больше 0, шаг — целое от 0"},
+                status=400)
+    else:
+        target, cycle, step = 1, 10, 0
+
+    hid = await add_habit(WEB_USER_ID, name, target, cycle, step)
+    return web.json_response({"ok": True, "id": hid})
+
+
+async def api_delete_habit(request):
+    if WEB_USER_ID is None:
+        return _need_user()
+    try:
+        hid = int(request.match_info["hid"])
+    except ValueError:
+        return web.json_response({"error": "Неверный id"}, status=400)
+    habit = await get_habit_by_id(hid)
+    if not habit or habit["user_id"] != WEB_USER_ID:
+        return web.json_response({"error": "Привычка не найдена"}, status=404)
+    await delete_habit(hid, WEB_USER_ID)
+    return web.json_response({"ok": True})
+
+
+async def api_save_settings(request):
+    if WEB_USER_ID is None:
+        return _need_user()
+    data = await request.json()
+    try:
+        enabled = bool(data["reminder_enabled"])
+        start = int(data["reminder_start_hour"])
+        end = int(data["reminder_end_hour"])
+        interval = int(data["reminder_interval_minutes"])
+        assert 0 <= start <= 23
+        assert 1 <= end <= 24
+        assert end > start
+        assert 1 <= interval <= 120
+    except (KeyError, ValueError, TypeError, AssertionError):
+        return web.json_response(
+            {"error": "Начало 0–23, конец 1–24 (позже начала), "
+                      "интервал 1–120 минут"},
+            status=400)
+
+    await update_settings(WEB_USER_ID, enabled, start, end, interval)
+    return web.json_response({"ok": True})
+
+
+async def start_web():
+    app = web.Application(middlewares=[error_middleware])
+    app.router.add_get("/", page_index)
+    app.router.add_get("/health", health)
+    app.router.add_get("/api/state", api_state)
+    app.router.add_post("/api/checkin", api_checkin)
+    app.router.add_post("/api/habits", api_add_habit)
+    app.router.add_delete("/api/habits/{hid}", api_delete_habit)
+    app.router.add_post("/api/settings", api_save_settings)
+    if STATIC_DIR.is_dir():
+        app.router.add_static("/static/", path=str(STATIC_DIR))
 
     port = int(os.getenv("PORT", 10000))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"Health OK on :{port}")
+    logger.info(f"Web UI on :{port}")
 
 
 async def main():
@@ -713,13 +944,13 @@ async def main():
     scheduler.add_job(
         send_reminders,
         "interval",
-        minutes=REMINDER_INTERVAL_MINUTES,
+        minutes=1,
         id="spam",
         replace_existing=True,
     )
     scheduler.start()
 
-    await health_server()
+    await start_web()
 
     logger.info("Bot started")
     await dp.start_polling(bot)

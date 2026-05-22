@@ -1,12 +1,15 @@
 services:
-  - type: worker
-    name: habit-tracker-bot
+  - type: web
+    name: habit-tracker
     runtime: docker
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
     envVars:
       - key: BOT_TOKEN
         sync: false
       - key: DATABASE_URL
+        sync: false
+      - key: WEB_USER_ID
         sync: false
       - key: TZ
         value: Asia/Aqtobe

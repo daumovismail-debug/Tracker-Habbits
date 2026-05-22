@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: habits
+      POSTGRES_PASSWORD: habits
+      POSTGRES_DB: habits
+    volumes:
+      - habit_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U habits"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      WEB_USER_ID: ${WEB_USER_ID}
+      DATABASE_URL: postgresql://habits:habits@db:5432/habits
+      TZ: ${TZ:-Asia/Aqtobe}
+      PORT: 10000
+    ports:
+      - "8080:10000"
+
+volumes:
+  habit_db:

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0e0f13">
+<title>Трекер Привычек</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <div class="title">🎯 Трекер Привычек</div>
+    <div class="date" id="date">Загрузка…</div>
+  </header>
+
+  <div class="progress-hero" id="hero"></div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="today">Сегодня</button>
+    <button class="tab" data-tab="stats">Статистика</button>
+    <button class="tab" data-tab="settings">Настройки</button>
+  </nav>
+
+  <main>
+    <section id="tab-today" class="panel"></section>
+    <section id="tab-stats" class="panel hidden"></section>
+    <section id="tab-settings" class="panel hidden"></section>
+  </main>
+</div>
+
+<button class="fab" id="fab" title="Новая привычка" aria-label="Новая привычка">+</button>
+
+<div class="modal-overlay hidden" id="modal">
+  <div class="modal">
+    <div class="modal-title">Новая привычка</div>
+    <input type="text" id="m-name" maxlength="64" placeholder="Название привычки" autocomplete="off">
+    <div class="set-row">
+      <div>
+        <div class="set-title">Прогрессия</div>
+        <div class="set-hint">Цель растёт со временем</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="m-prog">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div id="m-prog-fields" class="hidden">
+      <div class="set-row">
+        <div class="set-title">Начальная цель</div>
+        <input type="number" id="m-target" min="1" class="num" value="20">
+      </div>
+      <div class="set-row">
+        <div class="set-title">Цикл (дней)</div>
+        <input type="number" id="m-cycle" min="1" class="num" value="10">
+      </div>
+      <div class="set-row">
+        <div class="set-title">Шаг прогрессии</div>
+        <input type="number" id="m-step" min="0" class="num" value="2">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="m-cancel">Отмена</button>
+      <button class="btn primary" id="m-create">Создать</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
