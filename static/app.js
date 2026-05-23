@@ -5,6 +5,7 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 let state = null;
 let activeTab = 'today';
+let swipeState = null;
 
 const STATUS = {
   done:     { icon: '✅', label: 'Да' },
@@ -123,12 +124,15 @@ function renderToday() {
         <span>${s.icon}</span>${s.label}
       </button>`).join('');
     return `
-      <div class="card habit ${h.status || 'none'}">
-        <div class="habit-head">
-          <span class="habit-name">${esc(h.name)}</span>
-          ${meta.length ? `<span class="habit-meta">${meta.join(' · ')}</span>` : ''}
+      <div class="habit ${h.status || 'none'}" data-id="${h.id}" data-name="${esc(h.name)}">
+        <div class="habit-bg"><span>🗑 Удалить</span></div>
+        <div class="habit-fg">
+          <div class="habit-head">
+            <span class="habit-name">${esc(h.name)}</span>
+            ${meta.length ? `<span class="habit-meta">${meta.join(' · ')}</span>` : ''}
+          </div>
+          <div class="st-row">${buttons}</div>
         </div>
-        <div class="st-row">${buttons}</div>
       </div>`;
   }).join('');
 
@@ -242,14 +246,71 @@ async function setStatus(id, status) {
   }
 }
 
-async function deleteHabit(id, name) {
-  if (!confirm(`Удалить привычку «${name}»?\nСтатистика тоже исчезнет.`)) return;
+async function deleteHabit(id, name, skipConfirm = false) {
+  if (!skipConfirm
+      && !confirm(`Удалить привычку «${name}»?\nСтатистика тоже исчезнет.`)) {
+    return;
+  }
   try {
     await api('/api/habits/' + id, { method: 'DELETE' });
     toast('Привычка удалена');
     await load();
   } catch (e) {
     toast(e.message, 'err');
+  }
+}
+
+/* ─── swipe-to-delete ─── */
+
+function onSwipeStart(e) {
+  const fg = e.target.closest('.habit-fg');
+  if (!fg || e.target.closest('.st-btn')) return;
+  swipeState = {
+    fg, habit: fg.parentElement,
+    startX: e.clientX, startY: e.clientY,
+    dx: 0, capturing: false,
+  };
+}
+
+function onSwipeMove(e) {
+  if (!swipeState) return;
+  if (!document.contains(swipeState.fg)) { swipeState = null; return; }
+  const dx = e.clientX - swipeState.startX;
+  const dy = e.clientY - swipeState.startY;
+  if (!swipeState.capturing) {
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+    if (Math.abs(dy) > Math.abs(dx)) { swipeState = null; return; }
+    swipeState.capturing = true;
+    swipeState.habit.classList.add('dragging');
+  }
+  if (dx < 0) {
+    swipeState.dx = dx;
+    swipeState.fg.style.transform = `translateX(${dx}px)`;
+  } else {
+    swipeState.dx = 0;
+    swipeState.fg.style.transform = '';
+  }
+  e.preventDefault();
+}
+
+function onSwipeEnd() {
+  if (!swipeState) return;
+  const { fg, habit, dx, capturing } = swipeState;
+  swipeState = null;
+  habit.classList.remove('dragging');
+  if (!capturing) return;
+  const threshold = habit.offsetWidth * 0.4;
+  if (-dx > threshold) {
+    const id = Number(habit.dataset.id);
+    const name = habit.dataset.name;
+    if (confirm(`Удалить «${name}»?\nСтатистика тоже исчезнет.`)) {
+      fg.style.transform = `translateX(-${habit.offsetWidth}px)`;
+      deleteHabit(id, name, true);
+    } else {
+      fg.style.transform = '';
+    }
+  } else {
+    fg.style.transform = '';
   }
 }
 
@@ -335,11 +396,17 @@ function init() {
     if (e.key === 'Escape') closeModal();
   });
 
+  document.addEventListener('pointerdown', onSwipeStart);
+  document.addEventListener('pointermove', onSwipeMove);
+  document.addEventListener('pointerup', onSwipeEnd);
+  document.addEventListener('pointercancel', onSwipeEnd);
+
   load();
 
   setInterval(() => {
     if (activeTab === 'settings') return;
     if (!$('#modal').classList.contains('hidden')) return;
+    if (swipeState) return;
     load();
   }, 45000);
 }

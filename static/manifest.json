@@ -1,0 +1,25 @@
+{
+  "name": "Трекер Привычек",
+  "short_name": "Привычки",
+  "description": "Отслеживание привычек с прогрессией и напоминаниями",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0b0e",
+  "theme_color": "#0a0b0e",
+  "icons": [
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/app-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
