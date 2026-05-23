@@ -37,6 +37,9 @@ _web_uid = os.getenv("WEB_USER_ID", "").strip()
 WEB_USER_ID: Optional[int] = int(_web_uid) if _web_uid else None
 WEB_PASSWORD: Optional[str] = (os.getenv("WEB_PASSWORD") or "").strip() or None
 
+# Адрес сайта — если задан, бот добавит кнопку «Открыть приложение»
+WEB_URL: Optional[str] = (os.getenv("WEB_URL") or "").strip() or None
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 # Напоминания по умолчанию (меняются на сайте, хранятся в БД)
@@ -301,6 +304,8 @@ def progress_bar(percent: int, length: int = 10) -> str:
 
 def main_menu_kb(has_habits: bool = True) -> InlineKeyboardMarkup:
     rows = []
+    if WEB_URL:
+        rows.append([InlineKeyboardButton(text="🌐 Открыть приложение", url=WEB_URL)])
     if has_habits:
         rows.append([InlineKeyboardButton(text="✍️ Отметить привычки", callback_data="checkin_start")])
         rows.append([
@@ -415,6 +420,19 @@ async def cmd_start(message: Message):
     habits = await get_user_habits(message.from_user.id)
     text = await build_main(message.from_user.id)
     await message.answer(text, reply_markup=main_menu_kb(bool(habits)))
+
+
+@router.message(Command("app"))
+async def cmd_app(message: Message):
+    if not WEB_URL:
+        return await message.answer("Веб-приложение не настроено администратором.")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Открыть приложение", url=WEB_URL)]
+    ])
+    await message.answer(
+        "Жми, чтобы открыть веб-интерфейс трекера 👇",
+        reply_markup=kb
+    )
 
 
 @router.callback_query(F.data == "menu")
@@ -753,9 +771,13 @@ async def send_reminders():
                 f"⏳ Осталось времени: ~{mins_left} мин"
             )
 
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✍️ Отметить!", callback_data="checkin_start")],
-            ])
+            reminder_rows = []
+            if WEB_URL:
+                reminder_rows.append([InlineKeyboardButton(
+                    text="🌐 Открыть приложение", url=WEB_URL)])
+            reminder_rows.append([InlineKeyboardButton(
+                text="✍️ Отметить в боте", callback_data="checkin_start")])
+            kb = InlineKeyboardMarkup(inline_keyboard=reminder_rows)
             await bot.send_message(user_id, text, reply_markup=kb)
 
         except Exception as e:

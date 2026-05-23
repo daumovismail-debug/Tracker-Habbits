@@ -13,5 +13,7 @@ services:
         sync: false
       - key: WEB_PASSWORD
         sync: false
+      - key: WEB_URL
+        sync: false
       - key: TZ
         value: Asia/Aqtobe

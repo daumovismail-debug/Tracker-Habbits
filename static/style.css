@@ -36,6 +36,10 @@ body {
 /* ── header ── */
 header { text-align: center; margin-bottom: 18px; }
 .title { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+.title-icon {
+  width: 26px; height: 26px; border-radius: 7px;
+  vertical-align: -7px; margin-right: 6px;
+}
 .date { color: var(--dim); font-size: 14px; margin-top: 2px; }
 
 /* ── hero ring ── */
@@ -366,7 +370,10 @@ input[type=text] { width: 100%; }
   text-align: center;
   box-shadow: var(--shadow);
 }
-.login-icon { font-size: 46px; }
+.login-icon {
+  width: 72px; height: 72px; border-radius: 18px;
+  display: block; margin: 0 auto;
+}
 .login-title { font-size: 21px; font-weight: 700; margin-top: 6px; }
 .login-sub { color: var(--dim); font-size: 14px; margin: 4px 0 20px; }
 .login-card input { width: 100%; text-align: center; font-size: 15px; padding: 12px; }
