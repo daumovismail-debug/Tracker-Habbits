@@ -10,10 +10,10 @@ async function enter() {
   const password = pwd.value;
   err.textContent = '';
   if (!user_id) { err.textContent = 'Введите Telegram ID'; return; }
-  if (!password) { err.textContent = 'Введите пароль'; return; }
+  if (password.length < 4) { err.textContent = 'Пароль не короче 4 символов'; return; }
   btn.disabled = true;
   try {
-    const res = await fetch('/login', {
+    const res = await fetch('/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: Number(user_id), password }),
@@ -23,7 +23,7 @@ async function enter() {
       return;
     }
     const data = await res.json().catch(() => ({}));
-    err.textContent = data.error || 'Ошибка входа';
+    err.textContent = data.error || 'Ошибка регистрации';
   } catch (e) {
     err.textContent = 'Ошибка сети';
   }

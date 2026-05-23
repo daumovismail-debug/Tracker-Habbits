@@ -206,12 +206,9 @@ function renderSettings() {
       </div>
       <button class="btn primary" id="s-save">Сохранить</button>
     </div>
-    ${state.auth_enabled
-      ? '<button class="btn ghost" id="s-logout">Выйти из аккаунта</button>'
-      : ''}`;
+    <button class="btn ghost" id="s-logout">Выйти из аккаунта</button>`;
   $('#s-save').onclick = saveSettings;
-  const logout = $('#s-logout');
-  if (logout) logout.onclick = () => { window.location.href = '/logout'; };
+  $('#s-logout').onclick = () => { window.location.href = '/logout'; };
 }
 
 function renderFatal(msg) {

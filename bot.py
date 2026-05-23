@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import secrets
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
@@ -30,11 +31,10 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 TZ = os.getenv("TZ", "Asia/Aqtobe")
 
-# Telegram ID владельца — чьи привычки показывает веб-интерфейс
+# Если оба заданы — на старте создаётся (или обновляется) аккаунт владельца.
+# Иначе можно просто зарегистрироваться на сайте.
 _web_uid = os.getenv("WEB_USER_ID", "").strip()
 WEB_USER_ID: Optional[int] = int(_web_uid) if _web_uid else None
-
-# Пароль для входа на сайт (пусто — вход без пароля)
 WEB_PASSWORD: Optional[str] = (os.getenv("WEB_PASSWORD") or "").strip() or None
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -103,6 +103,20 @@ async def init_db():
                 reminder_interval_minutes INTEGER NOT NULL DEFAULT 2
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_accounts (
+                user_id BIGINT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+    await _ensure_secret_key()
     logger.info("DB ready")
 
 
@@ -771,14 +785,6 @@ WEEKDAYS_RU = ["понедельник", "вторник", "среда", "чет
                "пятница", "суббота", "воскресенье"]
 
 
-def _need_user():
-    return web.json_response(
-        {"error": "WEB_USER_ID не задан. Укажите свой Telegram ID в "
-                  "переменной окружения WEB_USER_ID и перезапустите сервер."},
-        status=503,
-    )
-
-
 @web.middleware
 async def error_middleware(request, handler):
     try:
@@ -790,53 +796,172 @@ async def error_middleware(request, handler):
         return web.json_response({"error": str(e)}, status=500)
 
 
-def _auth_token() -> str:
-    return hashlib.sha256(
-        f"habit-tracker-auth::{WEB_PASSWORD}".encode()).hexdigest()
+SECRET_KEY: bytes = b""
 
 
-def _is_authed(request) -> bool:
-    if WEB_PASSWORD is None:
-        return True
-    return hmac.compare_digest(
-        request.cookies.get("habit_auth", ""), _auth_token())
+async def _ensure_secret_key():
+    """Загружает или генерирует секрет для подписи сессий (хранится в БД)."""
+    global SECRET_KEY
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM app_meta WHERE key = 'secret_key'"
+        )
+        if row:
+            SECRET_KEY = bytes.fromhex(row["value"])
+            return
+        SECRET_KEY = secrets.token_bytes(32)
+        await conn.execute(
+            "INSERT INTO app_meta (key, value) VALUES ('secret_key', $1) "
+            "ON CONFLICT (key) DO NOTHING",
+            SECRET_KEY.hex()
+        )
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200_000)
+    return f"{salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt_hex, digest_hex = stored.split("$", 1)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+    except (ValueError, AttributeError):
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200_000)
+    return hmac.compare_digest(digest, expected)
+
+
+async def get_account(user_id: int) -> Optional[dict]:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM user_accounts WHERE user_id = $1", user_id
+        )
+    return dict(row) if row else None
+
+
+async def create_account(user_id: int, password: str):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO user_accounts (user_id, password_hash, created_at)
+               VALUES ($1, $2, $3)""",
+            user_id, hash_password(password),
+            datetime.now(ZoneInfo(TZ)).date().isoformat()
+        )
+
+
+async def upsert_account(user_id: int, password: str):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO user_accounts (user_id, password_hash, created_at)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (user_id) DO UPDATE SET password_hash = $2""",
+            user_id, hash_password(password),
+            datetime.now(ZoneInfo(TZ)).date().isoformat()
+        )
+
+
+def _session_cookie(user_id: int) -> str:
+    tag = hmac.new(SECRET_KEY, str(user_id).encode(),
+                   hashlib.sha256).hexdigest()
+    return f"{user_id}.{tag}"
+
+
+def _session_user(request) -> Optional[int]:
+    cookie = request.cookies.get("habit_session", "")
+    if not cookie or "." not in cookie:
+        return None
+    try:
+        uid_str, tag = cookie.split(".", 1)
+        uid = int(uid_str)
+    except ValueError:
+        return None
+    expected = hmac.new(SECRET_KEY, str(uid).encode(),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(tag, expected):
+        return None
+    return uid
+
+
+PUBLIC_PATHS = {"/login", "/register", "/logout", "/health"}
 
 
 @web.middleware
 async def auth_middleware(request, handler):
     path = request.path
-    if (WEB_PASSWORD is None
-            or path in ("/login", "/logout", "/health")
-            or path.startswith("/static/")):
+    if path in PUBLIC_PATHS or path.startswith("/static/"):
         return await handler(request)
-    if _is_authed(request):
-        return await handler(request)
-    if path.startswith("/api/"):
-        return web.json_response({"error": "Требуется вход"}, status=401)
-    raise web.HTTPFound("/login")
+    uid = _session_user(request)
+    if uid is None:
+        if path.startswith("/api/"):
+            return web.json_response({"error": "Требуется вход"}, status=401)
+        raise web.HTTPFound("/login")
+    request["user_id"] = uid
+    return await handler(request)
+
+
+def _set_session(resp, user_id: int):
+    resp.set_cookie("habit_session", _session_cookie(user_id),
+                    max_age=60 * 60 * 24 * 30, httponly=True, samesite="Lax")
 
 
 async def page_login(request):
-    if _is_authed(request):
+    if _session_user(request) is not None:
         raise web.HTTPFound("/")
     return web.FileResponse(STATIC_DIR / "login.html")
 
 
+async def page_register(request):
+    if _session_user(request) is not None:
+        raise web.HTTPFound("/")
+    return web.FileResponse(STATIC_DIR / "register.html")
+
+
 async def api_login(request):
-    if WEB_PASSWORD is None:
-        return web.json_response({"ok": True})
     data = await request.json()
-    if not hmac.compare_digest(str(data.get("password", "")), WEB_PASSWORD):
-        return web.json_response({"error": "Неверный пароль"}, status=401)
+    try:
+        uid = int(data.get("user_id"))
+    except (TypeError, ValueError):
+        return web.json_response(
+            {"error": "Введите корректный Telegram ID"}, status=400)
+    password = str(data.get("password", ""))
+    if not password:
+        return web.json_response({"error": "Введите пароль"}, status=400)
+    account = await get_account(uid)
+    if not account or not verify_password(password, account["password_hash"]):
+        return web.json_response(
+            {"error": "Неверный Telegram ID или пароль"}, status=401)
     resp = web.json_response({"ok": True})
-    resp.set_cookie("habit_auth", _auth_token(),
-                    max_age=60 * 60 * 24 * 30, httponly=True, samesite="Lax")
+    _set_session(resp, uid)
+    return resp
+
+
+async def api_register(request):
+    data = await request.json()
+    try:
+        uid = int(data.get("user_id"))
+        assert uid > 0
+    except (TypeError, ValueError, AssertionError):
+        return web.json_response(
+            {"error": "Telegram ID — положительное целое число"}, status=400)
+    password = str(data.get("password", ""))
+    if len(password) < 4:
+        return web.json_response(
+            {"error": "Пароль не короче 4 символов"}, status=400)
+    if await get_account(uid):
+        return web.json_response(
+            {"error": "Аккаунт с таким ID уже есть — войдите"}, status=409)
+    await create_account(uid, password)
+    resp = web.json_response({"ok": True})
+    _set_session(resp, uid)
     return resp
 
 
 async def page_logout(request):
     resp = web.HTTPFound("/login")
-    resp.del_cookie("habit_auth")
+    resp.del_cookie("habit_session")
     return resp
 
 
@@ -849,9 +974,7 @@ async def health(request):
 
 
 async def api_state(request):
-    if WEB_USER_ID is None:
-        return _need_user()
-    uid = WEB_USER_ID
+    uid = request["user_id"]
 
     habits = await get_user_habits(uid)
     checkins = await get_today_checkins(uid)
@@ -876,7 +999,6 @@ async def api_state(request):
         "weekday": WEEKDAYS_RU[now.weekday()],
         "habits": habit_list,
         "done_today": sum(1 for h in habit_list if h["status"] == "done"),
-        "auth_enabled": WEB_PASSWORD is not None,
         "stats": stats,
         "settings": {
             "reminder_enabled": settings["reminder_enabled"],
@@ -888,8 +1010,7 @@ async def api_state(request):
 
 
 async def api_checkin(request):
-    if WEB_USER_ID is None:
-        return _need_user()
+    uid = request["user_id"]
     data = await request.json()
     try:
         habit_id = int(data["habit_id"])
@@ -898,13 +1019,13 @@ async def api_checkin(request):
     status = data.get("status")
 
     habit = await get_habit_by_id(habit_id)
-    if not habit or habit["user_id"] != WEB_USER_ID:
+    if not habit or habit["user_id"] != uid:
         return web.json_response({"error": "Привычка не найдена"}, status=404)
 
     if status == "clear":
-        await delete_checkin(habit_id, WEB_USER_ID)
+        await delete_checkin(habit_id, uid)
     elif status in ("done", "not_done", "skip"):
-        await set_checkin(habit_id, WEB_USER_ID, status)
+        await set_checkin(habit_id, uid, status)
     else:
         return web.json_response({"error": "Неверный статус"}, status=400)
 
@@ -912,8 +1033,7 @@ async def api_checkin(request):
 
 
 async def api_add_habit(request):
-    if WEB_USER_ID is None:
-        return _need_user()
+    uid = request["user_id"]
     data = await request.json()
     name = (data.get("name") or "").strip()
     if not name or len(name) > 64:
@@ -933,27 +1053,25 @@ async def api_add_habit(request):
     else:
         target, cycle, step = 1, 10, 0
 
-    hid = await add_habit(WEB_USER_ID, name, target, cycle, step)
+    hid = await add_habit(uid, name, target, cycle, step)
     return web.json_response({"ok": True, "id": hid})
 
 
 async def api_delete_habit(request):
-    if WEB_USER_ID is None:
-        return _need_user()
+    uid = request["user_id"]
     try:
         hid = int(request.match_info["hid"])
     except ValueError:
         return web.json_response({"error": "Неверный id"}, status=400)
     habit = await get_habit_by_id(hid)
-    if not habit or habit["user_id"] != WEB_USER_ID:
+    if not habit or habit["user_id"] != uid:
         return web.json_response({"error": "Привычка не найдена"}, status=404)
-    await delete_habit(hid, WEB_USER_ID)
+    await delete_habit(hid, uid)
     return web.json_response({"ok": True})
 
 
 async def api_save_settings(request):
-    if WEB_USER_ID is None:
-        return _need_user()
+    uid = request["user_id"]
     data = await request.json()
     try:
         enabled = bool(data["reminder_enabled"])
@@ -970,7 +1088,7 @@ async def api_save_settings(request):
                       "интервал 1–120 минут"},
             status=400)
 
-    await update_settings(WEB_USER_ID, enabled, start, end, interval)
+    await update_settings(uid, enabled, start, end, interval)
     return web.json_response({"ok": True})
 
 
@@ -980,6 +1098,8 @@ async def start_web():
     app.router.add_get("/health", health)
     app.router.add_get("/login", page_login)
     app.router.add_post("/login", api_login)
+    app.router.add_get("/register", page_register)
+    app.router.add_post("/register", api_register)
     app.router.add_get("/logout", page_logout)
     app.router.add_get("/api/state", api_state)
     app.router.add_post("/api/checkin", api_checkin)
@@ -999,6 +1119,10 @@ async def start_web():
 
 async def main():
     await init_db()
+
+    if WEB_USER_ID is not None and WEB_PASSWORD is not None:
+        await upsert_account(WEB_USER_ID, WEB_PASSWORD)
+        logger.info(f"Owner account ensured: {WEB_USER_ID}")
 
     scheduler.add_job(
         send_reminders,

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0e0f13">
+<title>Регистрация — Трекер Привычек</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+</head>
+<body>
+
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-icon">🎯</div>
+    <div class="login-title">Регистрация</div>
+    <div class="login-sub">Привычки будут привязаны к Telegram ID</div>
+    <input type="number" id="uid" placeholder="Telegram ID" autocomplete="username" inputmode="numeric">
+    <input type="password" id="pwd" placeholder="Придумайте пароль" autocomplete="new-password">
+    <button class="btn primary" id="enter">Зарегистрироваться</button>
+    <div class="login-err" id="err"></div>
+    <div class="login-link">
+      Не знаешь свой ID? Напиши <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a><br>
+      <a href="/login">Уже есть аккаунт — войти</a>
+    </div>
+  </div>
+</div>
+
+<script src="/static/register.js"></script>
+</body>
+</html>
